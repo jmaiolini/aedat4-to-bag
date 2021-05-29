@@ -2,7 +2,7 @@ aedat4_folder: /files/aedat4/ #relative to script
 bag_folder: /files/bags/ #relative to script
 bag_name: ''
 cam_info_topic: /dvs/camera_info
-image_topic: /dvs/image/raw
+image_topic: /dvs/image_raw
 events_topic: /dvs/events
 imu_topic: /dvs/imu
 

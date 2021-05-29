@@ -3,25 +3,35 @@ import rospkg
 import sys
 import rosbag
 from sensor_msgs.msg import CameraInfo, Image, Imu
-from geometry_msgs.msg import PoseStamped
-from dvs_msgs.msg import EventArray
+from dvs_msgs.msg import Event, EventArray
 from dv import AedatFile
 import os
-import cv2
 from cv_bridge import CvBridge
-import numpy as np
 import yaml
 
 class Converter:
 
-    def __init__(self, _filename):
+    def __init__(self, pkg_path, filename):
 
-        param_file =  open(os.getcwd() + '/config/params.yaml')
+        if not os.path.exists(pkg_path + '/config/params.yaml'):
+            print("Config file not found.\nExiting.")
+            sys.exit(1)
+
+        param_file =  open(pkg_path + '/config/params.yaml')
         params = yaml.safe_load(param_file)
-        self._filename = _filename
 
-        self._in_file = os.getcwd() + params['aedat4_folder'] + _filename + '.aedat4'
-        self._out_file = os.getcwd() + params['bag_folder'] + _filename + '.bag'
+        self._filename = filename
+
+        self._in_file = pkg_path + params['aedat4_folder'] + self._filename + '.aedat4'
+        self._out_file = pkg_path + params['bag_folder'] + self._filename + '.bag'
+
+        if not os.path.exists(self._in_file):
+            print("Source aedat4 file not found.\nExiting.")
+            sys.exit(2)
+
+        if not os.path.exists(pkg_path + params['bag_folder']):
+            print("Creating folder to contain the ROS bags.")
+            os.makedirs(pkg_path + params['bag_folder'])
 
         #0 for timestamp integration, 1 for max num of events on ROS msgs
         self._conversion_type = params['conversion_type']
@@ -32,7 +42,7 @@ class Converter:
         self._events_topic = params['events_topic']
         self._imu_topic = params['imu_topic']
 
-        self.dt = params['reset_timestamp']
+        self._dt = params['reset_timestamp']
 
 
     def run(self):
@@ -42,11 +52,7 @@ class Converter:
         
         with AedatFile(self._in_file) as f:
 
-            # if 'events' in f.names :
-            #     for e in f['events']:
-            #         self.ts2rosTime(e.timestamp)
             height, width = f['events'].size
-
 
             if 'imu' in f.names :
                 imu_cnt = 0
@@ -70,6 +76,47 @@ class Converter:
                     
                     bag.write(self._imu_topic, imu_msg,t=imu_msg.header.stamp)
 
+            if 'events' in f.names :
+                ev_cnt = 0
+                ev_arr_cnt = 0
+                events = []
+
+                for ev in f['events']:
+                    if ev_cnt == 0:
+                        last_ts = ev.timestamp
+
+                    ev_cnt += 1
+                    curr_ts = ev.timestamp
+
+                    ev_msg = Event()
+
+                    ev_msg.x = ev.x
+                    ev_msg.y = ev.y
+                    ev_msg.ts = self.toRosTime(ev.timestamp)
+                    ev_msg.polarity = ev.polarity
+
+                    if self.reset_condition(curr_ts, last_ts): #TODO: reset condition for a fixed number of events
+                        ev_arr_msg = EventArray()
+                        ev_arr_cnt += 1
+                        #append last and publish msg with the last ts
+                        events.append(ev_msg)
+
+                        ev_arr_msg.header.seq = ev_arr_cnt
+                        ev_arr_msg.header.stamp = self.toRosTime(ev.timestamp) #eventually take mean: (curr_ts-last_ts)/2
+                    
+                        ev_arr_msg.height = height
+                        ev_arr_msg.width = width
+
+                        ev_arr_msg.events = events
+
+                        bag.write(self._events_topic, ev_arr_msg, t=ev_arr_msg.header.stamp)
+                        events = []
+                        last_ts = ev.timestamp
+                       
+                    
+                    else:
+                        events.append(ev_msg)
+
 
             if 'frames' in f.names :
                 frame_cnt = 0
@@ -83,7 +130,6 @@ class Converter:
                     
                     img_msg = bridge.cv2_to_imgmsg(frame.image, encoding="passthrough")
 
-
                     img_msg.header.seq = frame_cnt
                     img_msg.header.stamp = self.toRosTime(frame.timestamp)
 
@@ -94,30 +140,19 @@ class Converter:
             if 'triggers' in f.names :   
                 print('Triggers currently not implemented.')
 
-                # img = np.zeros((height, width,3), np.uint8)
 
-                # count = 0
-                # temp_img = img.copy()
-                # loop through the "events" stream
-                # for e in f['events']:
-
-                #     if count == accumulator_size:
-                #         temp_img = img.copy()
-                #         count = 0
-                
-                #     if e.polarity == True:
-                #         temp_img[e.y,e.x] = (0,255,0)
-                #     else:
-                #         temp_img[e.y,e.x] = (0,0,255)
-                #     cv2.imshow('Event image', temp_img)
-                #     cv2.waitKey(1)
-                #     count = count + 1
 
         bag.close()
+
+    def reset_condition(self, curr, last):
+        return True if (curr - last) >= self._dt * 1e3 else False
 
 
     def toRosTime(self,timestamp): #timestamp in us
         return rospy.Time.from_sec( timestamp * 1e-6 )
+
+def get_path(script_name):
+    return os.path.dirname(os.path.realpath(script_name))
 
 
 if __name__ == '__main__':
@@ -126,5 +161,7 @@ if __name__ == '__main__':
     if len(sys.argv) < 2:
         sys.exit("Usage: python3 converter.py <aedat file name>")
 
-    converter = Converter(sys.argv[1])
+    pkg_path = get_path(sys.argv[0])
+
+    converter = Converter(pkg_path, sys.argv[1])
     converter.run()
