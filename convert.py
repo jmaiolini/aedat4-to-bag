@@ -4,6 +4,7 @@ import sys
 import rosbag
 from sensor_msgs.msg import CameraInfo, Image, Imu
 from dvs_msgs.msg import Event, EventArray
+from triggers.msg import Trigger
 from dv import AedatFile
 import os
 from cv_bridge import CvBridge
@@ -41,6 +42,9 @@ class Converter:
         self._img_topic = params['image_topic']
         self._events_topic = params['events_topic']
         self._imu_topic = params['imu_topic']
+        self._triggers_topic = params['triggers_topic']
+
+        self._cam_info = params['cam_info']
 
         self._dt = params['reset_timestamp']
 
@@ -61,7 +65,7 @@ class Converter:
                     imu_msg = Imu()
                     
                     imu_msg.header.seq = imu_cnt
-                    imu_msg.header.stamp = self.toRosTime(i.timestamp)
+                    imu_msg.header.stamp = toRosTime(i.timestamp)
 
                     imu_msg.linear_acceleration.x = i.accelerometer[0]
                     imu_msg.linear_acceleration.y = i.accelerometer[1]
@@ -92,7 +96,7 @@ class Converter:
 
                     ev_msg.x = ev.x
                     ev_msg.y = ev.y
-                    ev_msg.ts = self.toRosTime(ev.timestamp)
+                    ev_msg.ts = toRosTime(ev.timestamp)
                     ev_msg.polarity = ev.polarity
 
                     if self.reset_condition(curr_ts, last_ts): #TODO: reset condition for a fixed number of events
@@ -102,7 +106,7 @@ class Converter:
                         events.append(ev_msg)
 
                         ev_arr_msg.header.seq = ev_arr_cnt
-                        ev_arr_msg.header.stamp = self.toRosTime(ev.timestamp) #eventually take mean: (curr_ts-last_ts)/2
+                        ev_arr_msg.header.stamp = toRosTime(ev.timestamp) #eventually take mean: (curr_ts-last_ts)/2
                     
                         ev_arr_msg.height = height
                         ev_arr_msg.width = width
@@ -131,25 +135,31 @@ class Converter:
                     img_msg = bridge.cv2_to_imgmsg(frame.image, encoding="passthrough")
 
                     img_msg.header.seq = frame_cnt
-                    img_msg.header.stamp = self.toRosTime(frame.timestamp)
+                    img_msg.header.stamp = toRosTime(frame.timestamp)
 
                     bag.write(self._img_topic, img_msg,t=img_msg.header.stamp)
 
                         
-
-            if 'triggers' in f.names :   
-                print('Triggers currently not implemented.')
-
-
+            if 'triggers' in f.names : 
+                for t in f['triggers']: 
+                    trigger_msg = make_trigger_msg(t)
+                    bag.write(self._triggers_topic, trigger_msg, t=trigger_msg.ts) #change it to stamp?
+                
 
         bag.close()
 
     def reset_condition(self, curr, last):
         return True if (curr - last) >= self._dt * 1e3 else False
 
+def toRosTime(timestamp): #timestamp in us
+    return rospy.Time.from_sec( timestamp * 1e-6 )
 
-    def toRosTime(self,timestamp): #timestamp in us
-        return rospy.Time.from_sec( timestamp * 1e-6 )
+def make_trigger_msg(trigger):
+    t = Trigger()
+    t.ts = toRosTime(trigger.timestamp)
+    t.type = trigger.type
+
+    return t
 
 def get_path(script_name):
     return os.path.dirname(os.path.realpath(script_name))
